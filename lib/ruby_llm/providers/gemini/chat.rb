@@ -86,57 +86,13 @@ module RubyLLM
           )
         end
 
-        def convert_schema_to_gemini(schema) # rubocop:disable Metrics/PerceivedComplexity
+        def convert_schema_to_gemini(schema)
           return nil unless schema
 
-          result = case schema[:type]
-                   when 'object'
-                     properties = schema[:properties]&.transform_values { |prop| convert_schema_to_gemini(prop) } || {}
-                     object_result = {
-                       type: 'OBJECT',
-                       properties: properties,
-                       required: schema[:required] || []
-                     }
-                     object_result[:propertyOrdering] = schema[:propertyOrdering] if schema[:propertyOrdering]
-                     object_result[:nullable] = schema[:nullable] if schema.key?(:nullable)
-                     object_result
-                   when 'array'
-                     {
-                       type: 'ARRAY',
-                       items: schema[:items] ? convert_schema_to_gemini(schema[:items]) : { type: 'STRING' }
-                     }
-                   when 'number'
-                     { type: 'NUMBER' }
-                   when 'integer'
-                     { type: 'INTEGER' }
-                   when 'boolean'
-                     { type: 'BOOLEAN' }
-                   else
-                     { type: 'STRING' }
-                   end
-
-          result[:description] = schema[:description] if schema[:description]
-
-          case schema[:type]
-          when 'string'
-            result[:enum] = schema[:enum] if schema[:enum]
-            result[:format] = schema[:format] if schema[:format]
-            result[:nullable] = schema[:nullable] if schema.key?(:nullable)
-          when 'number', 'integer'
-            result[:format] = schema[:format] if schema[:format]
-            result[:minimum] = schema[:minimum] if schema[:minimum]
-            result[:maximum] = schema[:maximum] if schema[:maximum]
-            result[:enum] = schema[:enum] if schema[:enum]
-            result[:nullable] = schema[:nullable] if schema.key?(:nullable)
-          when 'array'
-            result[:minItems] = schema[:minItems] if schema[:minItems]
-            result[:maxItems] = schema[:maxItems] if schema[:maxItems]
-            result[:nullable] = schema[:nullable] if schema.key?(:nullable)
-          when 'boolean'
-            result[:nullable] = schema[:nullable] if schema.key?(:nullable)
+          build_base_schema(schema).tap do |result|
+            result[:description] = schema[:description] if schema[:description]
+            apply_type_specific_attributes(result, schema)
           end
-
-          result
         end
 
         def extract_content(data)
@@ -161,6 +117,53 @@ module RubyLLM
           candidates = data.dig('usageMetadata', 'candidatesTokenCount') || 0
           thoughts = data.dig('usageMetadata', 'thoughtsTokenCount') || 0
           candidates + thoughts
+        end
+
+        def build_base_schema(schema)
+          case schema[:type]
+          when 'object'
+            build_object_schema(schema)
+          when 'array'
+            { type: 'ARRAY', items: schema[:items] ? convert_schema_to_gemini(schema[:items]) : { type: 'STRING' } }
+          when 'number'
+            { type: 'NUMBER' }
+          when 'integer'
+            { type: 'INTEGER' }
+          when 'boolean'
+            { type: 'BOOLEAN' }
+          else
+            { type: 'STRING' }
+          end
+        end
+
+        def build_object_schema(schema)
+          {
+            type: 'OBJECT',
+            properties: (schema[:properties] || {}).transform_values { |prop| convert_schema_to_gemini(prop) },
+            required: schema[:required] || []
+          }.tap do |object|
+            object[:propertyOrdering] = schema[:propertyOrdering] if schema[:propertyOrdering]
+            object[:nullable] = schema[:nullable] if schema.key?(:nullable)
+          end
+        end
+
+        def apply_type_specific_attributes(result, schema)
+          case schema[:type]
+          when 'string'
+            copy_attributes(result, schema, :enum, :format, :nullable)
+          when 'number', 'integer'
+            copy_attributes(result, schema, :format, :minimum, :maximum, :enum, :nullable)
+          when 'array'
+            copy_attributes(result, schema, :minItems, :maxItems, :nullable)
+          when 'boolean'
+            copy_attributes(result, schema, :nullable)
+          end
+        end
+
+        def copy_attributes(target, source, *attributes)
+          attributes.each do |attr|
+            target[attr] = source[attr] if attr == :nullable ? source.key?(attr) : source[attr]
+          end
         end
       end
     end
